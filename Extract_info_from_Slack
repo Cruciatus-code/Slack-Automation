@@ -1,5 +1,5 @@
 __author__ = "Lavisha"
-__version__ = "1.0"
+__version__ = "2.0"
 __description__ = ("A Python program to extract case information from a specifc Slack channel")
 
 
@@ -11,38 +11,45 @@ from slack_sdk.errors import SlackApiError  #type:ignore
 from datetime import datetime , timezone
 
 # Set your Slack API token
-SLACK_TOKEN = "your_slack_token_here" 
-#Way to get your Slack token : https://api.slack.com/
+SLACK_TOKEN = "your_Slack_token_here"
 client = WebClient(token=SLACK_TOKEN)
 
-# Function to retrieve messages from a channel
+# Function to retrieve messages from a channel with pagination support
 def fetch_channel_messages(channel_id, limit=1000):
+    messages = []
+    cursor = None
+
     try:
-        result = client.conversations_history(channel=channel_id, limit=limit)
-        return result['messages']
-    
+        while True:
+            result = client.conversations_history(channel=channel_id, limit=limit, cursor=cursor)
+            messages.extend(result['messages'])
+
+            # Get the next cursor, if there is more data
+            cursor = result.get('response_metadata', {}).get('next_cursor')
+            if not cursor:
+                break
+
     except SlackApiError as e:
         print(f"Error fetching messages: {e}")
-        return []
+    
+    return messages
 
-# Function to convert timestamp to DD-MM-YYYY format (for post-date)
+
+
+# Convert timestamp to a specific timezone and format (DD-MM-YYYY HH:MM:SS)
 def format_timestamp(ts, timezone_str='UTC'):
-    # Convert the Unix timestamp (float) to a timezone-aware datetime object in UTC
     utc_time = datetime.fromtimestamp(float(ts), tz=timezone.utc)
-    
-    # Convert the time to the desired timezone
-    target_timezone = pytz.timezone(timezone_str)
-    local_time = utc_time.astimezone(target_timezone)
-    
-    # Format the time in DD-MM-YYYY HH:MM:SS format
+    local_time = utc_time.astimezone(pytz.timezone(timezone_str))
     return local_time.strftime("%d-%m-%Y %H:%M:%S")
 
-
-# Function to convert DD-MM-YYYY to Unix timestamp (for start and end date)
+# Convert DD-MM-YYYY HH:MM:SS to Unix timestamp (for start and end date)
 def convert_to_timestamp(date_str):
-    dt_object = datetime.strptime(date_str, "%d-%m-%Y %H:%M:%S")
-    return int(dt_object.timestamp())
-
+    try:
+        dt_object = datetime.strptime(date_str, "%d-%m-%Y %H:%M:%S")
+        return dt_object.replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        print(f"Invalid date format: {date_str}")
+        return None
 
 # Function to check for case-related messages
 def find_case_posts (messages, start_ts, end_ts):
@@ -53,60 +60,38 @@ def find_case_posts (messages, start_ts, end_ts):
 
         # Check if message timestamp is within the range
         if start_ts <= message_ts <= end_ts:
-            case_number = find_case_number(text)
-            ctask_number = find_ctask_number(text)
+            case_number = find_case_or_ctask_number(text, 'CS')
+            ctask_number = find_case_or_ctask_number(text , 'CTASK')
             
 
             if case_number or ctask_number:
                 case_description = find_case_description(text)
                 post_date = format_timestamp(message.get('ts'), 'Asia/Kolkata')  # Date in DD-MM-YYYY (IST) format
                 case_posts.append({
-                    'case_number': case_number,
-                    'ctask_number': ctask_number,
-                    'case_description': case_description,
-                    'post_date': post_date
+                    'Case Number': case_number,
+                    'Ctask Number': ctask_number,
+                    'Case Description': case_description,
+                    'Post Date (IST) ': post_date
                 })
     return case_posts
 
-# Helper function to extract case number (if formatted in a specific way)
-def find_case_number(text):
-
-    words = text.split()
-    for word in words:
-        if '/' in word:
-            parts = word.split('/')  # Split the string at '/'
-            for part in parts:
-                if part.startswith('CS'):
-                    return part
-        elif word.startswith('CS'):
-            return word
-    return None
-
-def find_ctask_number(text):
-    # Adjust the pattern according to your ctask number format
-    words = text.split()
-    for word in words:
-        if '/' in word:
-            parts = word.split('/')  # Split the string at '/'
-            for part in parts:
-                if part.startswith('CTASK'):
-                    return part
-        elif word.startswith('CTASK'):
-            return word
+# Find case and task numbers using a reusable pattern function
+def find_case_or_ctask_number(text, prefix):
+    for word in text.split():
+        parts = word.split('/')
+        for part in parts:
+            if part.startswith(prefix):
+                return part
     return None
 
 
-# Helper function to extract case description
+# Function to extract case description
 def find_case_description(text):
-    # Adjust this to extract the part of the message that is the description
-    return text  # For now, return the entire text
+    return text  
 
 # Function to save the case posts to an Excel file
 def save_to_excel(case_posts, filename="Extract_case_posts.xlsx"):
-    # Create a pandas DataFrame from the case posts list
     df = pd.DataFrame(case_posts)
-    
-    # Save the DataFrame to an Excel file
     df.to_excel(filename, index=False)
     print(f"\nData saved to {filename}")
 
@@ -117,11 +102,14 @@ def get_case_posts(channel_id):
     start_date = input("Enter the start date and time (DD-MM-YYYY HH:MM:SS): ")
     end_date = input("Enter the end date and time (DD-MM-YYYY HH:MM:SS): ")
     
-    
     # Convert the start and end dates to Unix timestamps
     start_ts = convert_to_timestamp(start_date)
     end_ts =  convert_to_timestamp(end_date)
 
+    if start_ts is None or end_ts is None:
+        print("Invalid dates provided. Please try again.")
+        return
+    
     # Fetch all messages
     messages = fetch_channel_messages(channel_id)
     
@@ -140,3 +128,4 @@ def get_case_posts(channel_id):
 # Example usage
 channel_id = "your_channel_id_here"  # Replace with your channel ID
 get_case_posts(channel_id)
+
